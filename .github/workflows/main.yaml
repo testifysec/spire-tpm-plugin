@@ -5,7 +5,7 @@ jobs:
     name: Build
     runs-on: ubuntu-latest
     steps:
-      
+
     - name: Checkout
       uses: actions/checkout@v2
 
@@ -26,3 +26,39 @@ jobs:
     - name: Test tools
       run: |
         ./ci/test.sh tools
+
+    - name: Compute Tag
+      if: |
+        github.event_name == 'push'
+          && startsWith(github.event.ref, 'refs/tags/')
+      id: compute_tag
+      run: |
+        tag=${GITHUB_REF#refs/tags/}
+        if [ "$tag" != "$GITHUB_REF" ]; then
+          tag=$(echo "$tag" | sed -e 's/[^a-zA-Z0-9\-\.]/-/g')
+          echo ::set-output name=TAG::${tag}
+        else
+          echo "unable to determine tag" >&2
+          exit 1
+        fi
+
+    - name: Pack
+      if: |
+        github.event_name == 'push'
+          && startsWith(github.event.ref, 'refs/tags/')
+      run: ./ci/pack.sh "${{ steps.compute_tag.outputs.TAG }}"
+
+    - name: Create Release
+      if: |
+        github.event_name == 'push'
+          && startsWith(github.event.ref, 'refs/tags/')
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        assets=()
+        for asset in spire-tpm-plugin-*.tar.gz; do
+          assets+=("-a" "$asset")
+        done
+        hub release create "${assets[@]}" \
+          -m "${{ steps.compute_tag.outputs.TAG }}" \
+          "${{ steps.compute_tag.outputs.TAG }}"
