@@ -17,11 +17,17 @@
 package common
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io/ioutil"
+	"math/big"
 	"net/url"
+	"os"
+	"path"
+	"strconv"
 	"strings"
 
 	"github.com/google/certificate-transparency-go/x509"
@@ -125,4 +131,38 @@ func DecodeEK(pemBytes []byte) (*attest.EK, error) {
 	}
 
 	return nil, fmt.Errorf("invalid pem type: %s", block.Type)
+}
+
+func GetSeed(seedPath string) (int64, error) {
+	if seedPath != "" {
+		if _, err := os.Stat(seedPath); os.IsNotExist(err) {
+			return 0, errors.New(fmt.Sprintf("seed_path '%s' does not exist", seedPath))
+		}
+	} else {
+		var trySeedDirPath = "/opt/spire/.data"
+		if _, err := os.Stat(trySeedDirPath); !os.IsNotExist(err) {
+			seedPath = trySeedDirPath
+		}
+	}
+	if seedPath == "" {
+		return 0, errors.New("seed_path is required")
+	}
+
+	var seed int64
+	var trySeedFilePath = path.Join(seedPath, "seed")
+	if _, err := os.Stat(trySeedFilePath); !os.IsNotExist(err) {
+		seedText, err := ioutil.ReadFile(trySeedFilePath)
+		if err != nil {
+			return 0, err
+		}
+		seed, _ = strconv.ParseInt(string(seedText), 10, 64)
+	} else {
+		n, _ := rand.Int(rand.Reader, big.NewInt(2147483648))
+		seed = n.Int64()
+		err := ioutil.WriteFile(trySeedFilePath, []byte(fmt.Sprintf("%d", seed)), 0644)
+		if err != nil {
+			return 0, err
+		}
+	}
+	return seed, nil
 }

@@ -19,18 +19,34 @@ package main
 import (
 	"errors"
 	"fmt"
-	"log"
-
 	"github.com/bloomberg/spire-tpm-plugin/pkg/common"
+	"github.com/bloomberg/spire-tpm-plugin/pkg/common_test"
 	"github.com/google/go-attestation/attest"
+	sim "github.com/google/go-tpm-tools/simulator"
+	"log"
+	"os"
 )
 
 func main() {
+	args := os.Args[1:]
+	seedPath := ""
+	if len(args) > 0 {
+		seedPath = args[0]
+	}
+	seed, err := common.GetSeed(seedPath)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+
+	s, err := sim.GetWithFixedSeedInsecure(seed)
 	tpm, err := attest.OpenTPM(&attest.OpenConfig{
-		TPMVersion: attest.TPMVersion20,
+		TPMVersion:     attest.TPMVersion20,
+		CommandChannel: &common_test.TPMCmdChannel{ReadWriteCloser: s},
 	})
 	if err != nil {
-		log.Fatalln(err)
+		fmt.Println(err)
+		os.Exit(1)
 	}
 	defer tpm.Close()
 

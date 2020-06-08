@@ -21,8 +21,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/bloomberg/spire-tpm-plugin/pkg/common_test"
 	"github.com/google/go-attestation/attest"
-
+	sim "github.com/google/go-tpm-tools/simulator"
 	"github.com/hashicorp/hcl"
 	"github.com/spiffe/spire/proto/spire/agent/nodeattestor"
 	spc "github.com/spiffe/spire/proto/spire/common"
@@ -34,11 +35,12 @@ import (
 // TPMAttestorPlugin implements the nodeattestor Plugin interface
 type TPMAttestorPlugin struct {
 	config *TPMAttestorPluginConfig
-	tpm    *attest.TPM
 }
 
 type TPMAttestorPluginConfig struct {
 	trustDomain string
+	SeedPath    string `hcl:"seed_path"`
+	seed        int64
 }
 
 func (p *TPMAttestorPlugin) Configure(ctx context.Context, req *spi.ConfigureRequest) (*spi.ConfigureResponse, error) {
@@ -53,10 +55,15 @@ func (p *TPMAttestorPlugin) Configure(ctx context.Context, req *spi.ConfigureReq
 	if req.GlobalConfig.TrustDomain == "" {
 		return nil, errors.New("trust_domain is required")
 	}
-
 	config.trustDomain = req.GlobalConfig.TrustDomain
-	p.config = config
 
+	seed, err := common.GetSeed(config.SeedPath)
+	if err != nil {
+		return nil, err
+	}
+	config.seed = seed
+
+	p.config = config
 	return &spi.ConfigureResponse{}, nil
 }
 
@@ -122,17 +129,15 @@ func (p *TPMAttestorPlugin) GetPluginInfo(context.Context, *spi.GetPluginInfoReq
 }
 
 func (p *TPMAttestorPlugin) calculateResponse(ec *attest.EncryptedCredential, aikBytes []byte) (*common.ChallengeResponse, error) {
-	tpm := p.tpm
-	if tpm == nil {
-		var err error
-		tpm, err = attest.OpenTPM(&attest.OpenConfig{
-			TPMVersion: attest.TPMVersion20,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("failed to connect to tpm: %v", err)
-		}
-		defer tpm.Close()
+	s, err := sim.GetWithFixedSeedInsecure(p.config.seed)
+	tpm, err := attest.OpenTPM(&attest.OpenConfig{
+		TPMVersion:     attest.TPMVersion20,
+		CommandChannel: &common_test.TPMCmdChannel{ReadWriteCloser: s},
+	})
+	if err != nil {
+		return nil, err
 	}
+	defer tpm.Close()
 
 	aik, err := tpm.LoadAK(aikBytes)
 	if err != nil {
@@ -150,17 +155,12 @@ func (p *TPMAttestorPlugin) calculateResponse(ec *attest.EncryptedCredential, ai
 }
 
 func (p *TPMAttestorPlugin) generateAttestationData() (*common.AttestationData, []byte, error) {
-	tpm := p.tpm
-	if tpm == nil {
-		var err error
-		tpm, err = attest.OpenTPM(&attest.OpenConfig{
-			TPMVersion: attest.TPMVersion20,
-		})
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to connect to tpm: %v", err)
-		}
-		defer tpm.Close()
-	}
+	s, err := sim.GetWithFixedSeedInsecure(p.config.seed)
+	tpm, _ := attest.OpenTPM(&attest.OpenConfig{
+		TPMVersion:     attest.TPMVersion20,
+		CommandChannel: &common_test.TPMCmdChannel{ReadWriteCloser: s},
+	})
+	defer tpm.Close()
 
 	eks, err := tpm.EKs()
 	if err != nil {
