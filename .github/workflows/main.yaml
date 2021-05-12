@@ -42,23 +42,46 @@ jobs:
           exit 1
         fi
 
-    - name: Pack
-      if: |
-        github.event_name == 'push'
-          && startsWith(github.event.ref, 'refs/tags/')
-      run: ./ci/pack.sh "${{ steps.compute_tag.outputs.TAG }}"
-
-    - name: Create Release
+    - name: Release
       if: |
         github.event_name == 'push'
           && startsWith(github.event.ref, 'refs/tags/')
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
+        ./ci/release.sh "${{ steps.compute_tag.outputs.TAG }}"
         assets=()
-        for asset in spire-tpm-plugin-*.tar.gz; do
-          assets+=("-a" "$asset")
+        for asset in $(ls releases); do
+          assets+=("-a" "releases/$asset")
         done
         hub release create "${assets[@]}" \
           -m "${{ steps.compute_tag.outputs.TAG }}" \
           "${{ steps.compute_tag.outputs.TAG }}"
+
+    - name: Set up Buildx
+      if: |
+        github.event_name == 'push'
+          && startsWith(github.event.ref, 'refs/tags/')
+      uses: docker/setup-buildx-action@v1
+      id: buildx
+      with:
+        version: v0.5.1
+        driver: docker-container
+        install: true
+        buildkitd-flags: --debug
+
+    - name: Login to Docker HUB
+      if: |
+        github.event_name == 'push'
+          && startsWith(github.event.ref, 'refs/tags/')
+      uses: docker/login-action@v1
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+    - name: Docker Release
+      if: |
+        github.event_name == 'push'
+          && startsWith(github.event.ref, 'refs/tags/')
+      run: |
+        ./ci/docker.sh "${{ steps.compute_tag.outputs.TAG }}"

@@ -1,4 +1,46 @@
-build: cmd/server/tpm_attestor/tpm_attestor.go cmd/agent/tpm_attestor/tpm_attestor.go tools/get_tpm_pubhash/get_tpm_pubhash.go
-	GOOS=linux GOARCH=amd64 go build -o tpm_attestor_server cmd/server/tpm_attestor/tpm_attestor.go
-	GOOS=linux GOARCH=amd64 go build -o tpm_attestor_agent cmd/agent/tpm_attestor/tpm_attestor.go
-	GOOS=linux GOARCH=amd64 go build -o get_tpm_pubhash tools/get_tpm_pubhash/get_tpm_pubhash.go
+.ONESHELL:
+
+BINARIES ?= tpm_attestor_server tpm_attestor_agent get_tpm_pubhash
+OSES ?= linux
+ARCHITECTURES ?= amd64 arm64
+VERSION ?= develop
+DOCKER_REGISTRY ?= docker.io
+DOCKER_REPOSITORY_PREFIX ?= boxboat/spire-tpm-plugin
+BUILD_DIR ?= ./build
+RELEASES_DIR ?= ./releases
+PLATFORMS ?= $(foreach os, $(OSES), $(foreach architecture, $(ARCHITECTURES), --platform $(os)/$(architecture)))
+
+BUILD_TARGETS := $(foreach binary, $(BINARIES), $(foreach os, $(OSES), $(foreach architecture, $(ARCHITECTURES), $(binary)-$(os)-$(architecture))))
+RELEASE_TARGETS := $(foreach build, $(BUILD_TARGETS), $(build)-release)
+DOCKER_TARGETS := $(foreach binary, $(BINARIES), $(binary)-docker)
+
+target_words = $(subst -, ,$@)
+target_binary = $(word 1, $(target_words))
+target_os = $(word 2, $(target_words))
+target_architecture = $(word 3, $(target_words))
+
+target_binary_hyphens = $(subst _,-,$(target_binary))
+
+build: $(BUILD_TARGETS)
+$(BUILD_TARGETS):
+	CGO_ENABLED=0 GOOS=$(target_os) GOARCH=$(target_architecture) go build -ldflags="-s -w -extldflags -static" -o $(BUILD_DIR)/$(target_os)/$(target_architecture)/$(target_binary) cmd/$(target_binary)/main.go
+
+test:
+	go test ./...
+
+release: $(RELEASE_TARGETS)
+$(RELEASE_TARGETS):
+	mkdir -p releases
+	tar -cvzf $(RELEASES_DIR)/spire_tpm_plugin_$(target_binary)_$(target_os)_$(target_architecture)_$(VERSION).tar.gz -C $(BUILD_DIR)/$(target_os)/$(target_architecture) $(target_binary)
+
+docker: $(DOCKER_TARGETS)
+$(DOCKER_TARGETS):
+	docker build $(PLATFORMS) --build-arg BINARY=$(target_binary) -t $(DOCKER_REGISTRY)/$(DOCKER_REPOSITORY_PREFIX)-$(target_binary_hyphens):$(VERSION) . --push
+
+docker-build:
+	CGO_ENABLED=0 GOOS=$(TARGETOS) GOARCH=$(TARGETARCH) go build -ldflags="-s -w -extldflags -static" -o ${BINARY} cmd/${BINARY}/main.go
+
+clean:
+	rm -rf $(BUILD_DIR) $(RELEASES_DIR)
+
+.PHONY: $(BUILD_TARGETS) $(RELEASE_TARGETS) $(DOCKER_TARGETS) build test release docker clean
