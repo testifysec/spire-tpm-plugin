@@ -14,8 +14,9 @@ COPY . .
 
 RUN TARGETOS=${TARGETOS} TARGETARCH=${TARGETARCH} BINARY=${BINARY} make docker-build
 
-FROM --platform=${TARGETPLATFORM} alpine:3.13
+FROM --platform=${TARGETPLATFORM} debian:buster-slim
 
+RUN apt update && apt install -y libtspi-dev
 WORKDIR /app
 
 ARG BINARY
