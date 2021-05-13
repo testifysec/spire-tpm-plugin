@@ -26,4 +26,4 @@ docker exec \
   -w "/home/docker/spire-tpm-plugin/" \
   spire-tpm-plugin-ci \
   fixuid \
-  make
+  make build

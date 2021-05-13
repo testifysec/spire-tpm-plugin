@@ -18,10 +18,4 @@ if [ $# -ne 1 ]; then
   exit 1
 fi
 
-binaries=("get_tpm_pubhash" "tpm_attestor_agent" "tpm_attestor_server")
-
-rm -f spire-tpm-plugin-*.tar.gz
-user="$(id -u):$(id -g)"
-sudo chown root:root "${binaries[@]}"
-tar -cvzf "spire-tpm-plugin-$1-linux-amd64.tar.gz" "${binaries[@]}"
-sudo chown "$user" "${binaries[@]}"
+VERSION=$1 make release

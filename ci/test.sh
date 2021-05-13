@@ -16,7 +16,7 @@ if [ "$option" = "plugin" ] || [ "$option" = "all" ]; then
   test_dirs+=("pkg/common")
 fi
 if [ "$option" = "tools" ] || [ "$option" = "all" ]; then
-  test_dirs+=("tools/get_tpm_pubhash")
+  test_dirs+=("cmd/get_tpm_pubhash")
 fi
 
 if [ "${#test_dirs[@]}" = "0" ]; then

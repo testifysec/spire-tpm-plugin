@@ -89,7 +89,7 @@ The plugin uses TPM credential activation as the method of attestation. The plug
 1. Agent decrypts the challenge's secret 
 1. Agent sends back decrypted secret
 1. Server verifies that the decrypted secret is the same it used to build the challenge
-1. Server creates a SPIFFE ID in the form of `spiffe://<trust_domain>/agent/tpm/<sha256sum_of_tpm_pubkey>`
+1. Server creates a SPIFFE ID in the form of `spiffe://<trust_domain>/spire/agent/tpm/<sha256sum_of_tpm_pubkey>`
 1. All done!
 
 For info on how TPM attestation usually works and how this implementation differs, visit [TPM.md](TPM.md).
