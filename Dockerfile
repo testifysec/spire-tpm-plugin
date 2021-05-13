@@ -1,4 +1,4 @@
-FROM --platform=${BUILDPLATFORM} golang:1.16.4-alpine3.13 as build
+FROM --platform=${BUILDPLATFORM} golang:1.16.4 as build
 
 ARG BINARY
 ARG TARGETOS
@@ -6,7 +6,7 @@ ARG TARGETARCH
 
 ENV binary_env=$binary
 
-RUN apk --no-cache add make && \
+RUN apt update && apt install -y build-essential libtspi-dev && \
     mkdir /app
 
 WORKDIR /app
