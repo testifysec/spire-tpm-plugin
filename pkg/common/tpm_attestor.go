@@ -32,9 +32,16 @@ const (
 	PluginName = "tpm"
 )
 
+type PCRRegister struct {
+	Digest    []byte
+	DigestAlg string
+	Index     int
+}
+
 type AttestationData struct {
-	EK []byte
-	AK *attest.AttestationParameters
+	EK   []byte
+	AK   *attest.AttestationParameters
+	PCRs *[]PCRRegister
 }
 
 type Challenge struct {

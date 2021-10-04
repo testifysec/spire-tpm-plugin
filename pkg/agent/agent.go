@@ -21,6 +21,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
+	"strings"
+	"time"
+
 	"github.com/google/go-attestation/attest"
 
 	"github.com/hashicorp/hcl"
@@ -40,6 +44,9 @@ type TPMAttestorPlugin struct {
 type TPMAttestorPluginConfig struct {
 	trustDomain string
 }
+
+var seededRand *rand.Rand = rand.New(
+	rand.NewSource(time.Now().UnixNano()))
 
 func (p *TPMAttestorPlugin) Configure(ctx context.Context, req *spi.ConfigureRequest) (*spi.ConfigureResponse, error) {
 	config := &TPMAttestorPluginConfig{}
@@ -188,8 +195,49 @@ func (p *TPMAttestorPlugin) generateAttestationData() (*common.AttestationData, 
 		return nil, nil, err
 	}
 
+	hashAlgo := attest.HashSHA1
+	pcrs, err := tpm.PCRs(hashAlgo)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	pcrData := []common.PCRRegister{}
+
+	for _, r := range pcrs {
+		pcr := common.PCRRegister{
+			Digest:    r.Digest,
+			DigestAlg: hashAlgo.String(),
+			Index:     r.Index,
+		}
+
+		pcrData = append(pcrData, pcr)
+
+	}
+
+	tpm.AttestPlatform(ak, generateRandom(), nil)
+
 	return &common.AttestationData{
-		EK: ekBytes,
-		AK: &params,
+		EK:   ekBytes,
+		AK:   &params,
+		PCRs: &pcrData,
 	}, aikBytes, nil
+}
+
+//*Security Issue* Server should supply this
+func generateRandom() []byte {
+	chars := []rune("ABCDEFGHIJKLMNOPQRSTUVWXYZÅÄÖ" +
+		"abcdefghijklmnopqrstuvwxyzåäö" +
+		"0123456789")
+
+	length := 12
+	var s strings.Builder
+	for i := 0; i < length; i++ {
+		s.WriteRune(chars[rand.Intn(len(chars))])
+	}
+
+	b := []byte{}
+
+	s.Write(b)
+
+	return b
 }

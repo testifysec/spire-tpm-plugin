@@ -19,12 +19,14 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/google/go-attestation/attest"
 
@@ -224,15 +226,23 @@ func (p *TPMAttestorPlugin) Attest(stream nodeattestor.NodeAttestor_AttestServer
 
 	return stream.Send(&nodeattestor.AttestResponse{
 		AgentId:   common.AgentID(p.config.trustDomain, hashEncoded),
-		Selectors: buildSelectors(hashEncoded),
+		Selectors: buildSelectors(hashEncoded, *attestationData.PCRs),
 	})
 }
 
-func buildSelectors(pubHash string) []*spc.Selector {
+func buildSelectors(pubHash string, pcrs []common.PCRRegister) []*spc.Selector {
 	selectors := []*spc.Selector{}
 	selectors = append(selectors, &spc.Selector{
 		Type: "tpm", Value: "pub_hash:" + pubHash,
 	})
+
+	for _, r := range pcrs {
+		selectors = append(selectors, &spc.Selector{
+			Type:  "tpm",
+			Value: "pcr:" + strconv.Itoa(r.Index) + ":" + r.DigestAlg + ":" + (hex.EncodeToString(r.Digest)),
+		},
+		)
+	}
 	return selectors
 }
 
