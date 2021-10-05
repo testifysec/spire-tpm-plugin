@@ -33,7 +33,7 @@ const (
 )
 
 type PCRRegister struct {
-	Digest    []byte
+	Digest    string
 	DigestAlg string
 	Index     int
 }

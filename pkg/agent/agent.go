@@ -18,6 +18,7 @@ package agent
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -82,6 +83,7 @@ func (p *TPMAttestorPlugin) FetchAttestationData(stream nodeattestor.NodeAttesto
 	}
 
 	attestationDataBytes, err := json.Marshal(attestationData)
+	//return fmt.Errorf("%s", attestationDataBytes)
 	if err != nil {
 		return fmt.Errorf("tpm: failed to marshal attestation data to json: %v", err)
 	}
@@ -205,7 +207,7 @@ func (p *TPMAttestorPlugin) generateAttestationData() (*common.AttestationData, 
 
 	for _, r := range pcrs {
 		pcr := common.PCRRegister{
-			Digest:    r.Digest,
+			Digest:    hex.EncodeToString(r.Digest),
 			DigestAlg: hashAlgo.String(),
 			Index:     r.Index,
 		}

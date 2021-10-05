@@ -19,14 +19,12 @@ package server
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
-	"strconv"
 
 	"github.com/google/go-attestation/attest"
 
@@ -237,9 +235,11 @@ func buildSelectors(pubHash string, pcrs []common.PCRRegister) []*spc.Selector {
 	})
 
 	for _, r := range pcrs {
+		valueString := fmt.Sprintf("pcr%d:%s", r.Index, r.Digest)
+
 		selectors = append(selectors, &spc.Selector{
 			Type:  "tpm",
-			Value: "pcr:" + strconv.Itoa(r.Index) + ":" + r.DigestAlg + ":" + (hex.EncodeToString(r.Digest)),
+			Value: valueString,
 		},
 		)
 	}
