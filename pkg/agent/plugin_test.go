@@ -5,51 +5,34 @@ package agent
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"io/ioutil"
-	"math/big"
-	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/bloomberg/spire-tpm-plugin/pkg/common_test"
 	"github.com/bloomberg/spire-tpm-plugin/pkg/server"
 	"github.com/google/go-attestation/attest"
 	sim "github.com/google/go-tpm-tools/simulator"
 	"github.com/google/go-tpm-tools/tpm2tools"
-	attestor "github.com/spiffe/spire/pkg/agent/attestor/node"
-	spi "github.com/spiffe/spire/proto/spire/common/plugin"
 
-	"github.com/sirupsen/logrus/hooks/test"
-	"github.com/spiffe/spire/pkg/agent/plugin/keymanager"
-	"github.com/spiffe/spire/pkg/agent/plugin/keymanager/memory"
-	agentnodeattestor "github.com/spiffe/spire/pkg/agent/plugin/nodeattestor"
-	"github.com/spiffe/spire/pkg/common/catalog"
-	"github.com/spiffe/spire/pkg/common/idutil"
-	"github.com/spiffe/spire/pkg/common/pemutil"
-	"github.com/spiffe/spire/pkg/common/telemetry"
-	servernodeattestor "github.com/spiffe/spire/pkg/server/plugin/nodeattestor"
-	"github.com/spiffe/spire/test/fakes/fakeagentcatalog"
-	"github.com/spiffe/spire/test/spiretest"
+	"github.com/spiffe/spire-plugin-sdk/pluginsdk"
+	"github.com/spiffe/spire-plugin-sdk/plugintest"
+	agentnodeattestorv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/plugin/agent/nodeattestor/v1"
+	servernodeattestorv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/plugin/server/nodeattestor/v1"
+	configv1 "github.com/spiffe/spire-plugin-sdk/proto/spire/service/common/config/v1"
 	"github.com/stretchr/testify/require"
 )
 
 var (
-	hashExpected = "1b5bbe2e96054f7bc34ebe7ba9a4a9eac5611c6879285ceff6094fa556af485c"
-	svidExpected = "spiffe://domain.test/spire/agent/tpm/" + hashExpected
-	invalidHash  = "0000000000000000000000000000000000000000000000000000000000000000"
-	testKey, _   = pemutil.ParseSigner([]byte(`-----BEGIN PRIVATE KEY-----
-MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgy8ps3oQaBaSUFpfd
-XM13o+VSA0tcZteyTvbOdIQNVnKhRANCAAT4dPIORBjghpL5O4h+9kyzZZUAFV9F
-qNV3lKIL59N7G2B4ojbhfSNneSIIpP448uPxUnaunaQZ+/m7+x9oobIp
------END PRIVATE KEY-----
-`))
-	invalidCA, _ = pemutil.ParseCertificate([]byte(`-----BEGIN CERTIFICATE-----
+	hashExpected           = "1b5bbe2e96054f7bc34ebe7ba9a4a9eac5611c6879285ceff6094fa556af485c"
+	selectorValuesExpected = []string{"pub_hash:" + hashExpected}
+	idExpected             = "spiffe://domain.test/spire/agent/tpm/" + hashExpected
+	invalidHash            = "0000000000000000000000000000000000000000000000000000000000000000"
+	invalidCAPEM           = []byte(`-----BEGIN CERTIFICATE-----
 MIIDjDCCAnSgAwIBAgIUWe6uPQG5Z+xnccBoXH9ui6dORgMwDQYJKoZIhvcNAQEL
 BQAwYTEZMBcGA1UECgwQVFBNIE1hbnVmYWN0dXJlcjEhMB8GA1UECwwYVFBNIE1h
 bnVmYWN0dXJlciBSb290IENBMSEwHwYDVQQDDBhUUE0gTWFudWZhY3R1cmVyIFJv
@@ -70,7 +53,7 @@ litUyWe49TAfNcIRz9DVW72U0KL7kaqP5T4elje65L6oRE3PUlbrNLynxbOvBlr0
 yiDzSj4A2Iqxbhkp2MLGuPR6e5MkLLfeHIdos4uVGgzmcyVU6+wss0QPqNMrfANn
 80Ur8/Y9v//wSdaU+AsDfrBNiXgmp7sJ4jsvt+P8xTLTTCNmN2Pewh9N8Q3RwMZV
 -----END CERTIFICATE-----
-`))
+`)
 )
 
 func TestAttestor(t *testing.T) {
@@ -79,6 +62,8 @@ func TestAttestor(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tpm2tools.CheckedClose(t, s)
+
+	invalidCA := pemToCertificate(t, invalidCAPEM)
 
 	tpm, err := attest.OpenTPM(&attest.OpenConfig{
 		TPMVersion:     attest.TPMVersion20,
@@ -96,91 +81,66 @@ func TestAttestor(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// create CA and server certificates
-	caCert := createCACertificate(t)
-	serverCert := createServerCertificate(t, caCert)
-
-	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{
-			{
-				Certificate: [][]byte{serverCert.Raw},
-				PrivateKey:  testKey,
-			},
-		},
-	}
-
 	testCases := []struct {
-		name            string
-		bootstrapBundle *x509.Certificate
-		emptyCA         bool
-		err             string
-		hcl             string
-		pemEncodeCAs    bool
-		validateCAs     []*x509.Certificate
-		validateHashes  []string
+		name           string
+		emptyCA        bool
+		err            string
+		hcl            string
+		pemEncodeCAs   bool
+		validateCAs    []*x509.Certificate
+		validateHashes []string
 	}{
 		{
-			name:            "valid CA certificate PEM format",
-			bootstrapBundle: caCert,
-			validateCAs:     []*x509.Certificate{tpmCACert},
-			pemEncodeCAs:    true,
+			name:         "valid CA certificate PEM format",
+			validateCAs:  []*x509.Certificate{tpmCACert},
+			pemEncodeCAs: true,
 		},
 		{
-			name:            "valid CA certificate DER format",
-			bootstrapBundle: caCert,
-			validateCAs:     []*x509.Certificate{tpmCACert},
+			name:        "valid CA certificate DER format",
+			validateCAs: []*x509.Certificate{tpmCACert},
 		},
 		{
-			name:            "valid multiple CAs",
-			bootstrapBundle: caCert,
-			validateCAs:     []*x509.Certificate{tpmCACert, invalidCA},
+			name:        "valid multiple CAs",
+			validateCAs: []*x509.Certificate{tpmCACert, invalidCA},
 		},
 		{
-			name:            "valid hash",
-			bootstrapBundle: caCert,
-			validateHashes:  []string{hashExpected},
+			name:           "valid hash",
+			validateHashes: []string{hashExpected},
 		},
 		{
-			name:            "valid hash",
-			bootstrapBundle: caCert,
-			validateHashes:  []string{hashExpected},
+			name:           "valid hash",
+			validateHashes: []string{hashExpected},
 		},
 		{
-			name:            "valid CA, invalid hash",
-			bootstrapBundle: caCert,
-			validateCAs:     []*x509.Certificate{tpmCACert},
-			validateHashes:  []string{invalidHash},
+			name:           "valid CA, invalid hash",
+			validateCAs:    []*x509.Certificate{tpmCACert},
+			validateHashes: []string{invalidHash},
 		},
 		{
-			name:            "valid hash, invalid CA",
-			bootstrapBundle: caCert,
-			validateCAs:     []*x509.Certificate{invalidCA},
-			validateHashes:  []string{hashExpected},
+			name:           "valid hash, invalid CA",
+			validateCAs:    []*x509.Certificate{invalidCA},
+			validateHashes: []string{hashExpected},
 		},
 		{
-			name:            "error empty CA",
-			bootstrapBundle: caCert,
-			emptyCA:         true,
-			err:             "could not verify cert",
+			name:    "error empty CA",
+			emptyCA: true,
+			err:     "could not verify cert",
 		},
 		{
-			name:            "error invalid CA",
-			bootstrapBundle: caCert,
-			validateCAs:     []*x509.Certificate{invalidCA},
-			err:             "could not verify cert",
+			name:        "error invalid CA",
+			validateCAs: []*x509.Certificate{invalidCA},
+			err:         "could not verify cert",
 		},
 		{
-			name:            "error invalid hash",
-			bootstrapBundle: caCert,
-			validateHashes:  []string{invalidHash},
-			err:             "could not validate EK",
+			name:           "error invalid hash",
+			validateHashes: []string{invalidHash},
+			err:            "could not validate EK",
 		},
 		{
-			name:            "error invalid hash, invalid CA",
-			bootstrapBundle: caCert,
-			validateCAs:     []*x509.Certificate{invalidCA},
-			validateHashes:  []string{invalidHash},
-			err:             "could not verify cert",
+			name:           "error invalid hash, invalid CA",
+			validateCAs:    []*x509.Certificate{invalidCA},
+			validateHashes: []string{invalidHash},
+			err:            "could not verify cert",
 		},
 	}
 
@@ -189,98 +149,99 @@ func TestAttestor(t *testing.T) {
 			require := require.New(t)
 
 			// prepare the temp directory
-			hcl, removeDir := prepareTestDir(t, testCase.validateCAs, testCase.pemEncodeCAs,
+			hcl := prepareTestDir(t, testCase.validateCAs, testCase.pemEncodeCAs,
 				testCase.emptyCA, testCase.validateHashes)
-			defer removeDir()
 			if testCase.hcl != "" {
 				hcl = testCase.hcl
 			}
 
 			// load up the fake agent-side node attestor
-			agentPlugin := New()
-			agentPlugin.Configure(nil, &spi.ConfigureRequest{
-				GlobalConfig: &spi.ConfigureRequest_GlobalConfig{
-					TrustDomain: "domain.test",
-				},
-			})
-			agentPlugin.tpm = tpm
-			agentNA, agentNADone := prepareAgentNA(t, agentPlugin)
-			defer agentNADone()
+			agentPlugin := loadAgentPlugin(t, tpm)
+			serverPlugin := loadServerPlugin(t, hcl)
 
-			// load up the fake server-side node attestor
-			serverPlugin := server.New()
-			serverPlugin.Configure(nil, &spi.ConfigureRequest{
-				Configuration: hcl,
-				GlobalConfig: &spi.ConfigureRequest_GlobalConfig{
-					TrustDomain: "domain.test",
-				},
-			})
-			serverNA, serverNADone := prepareServerNA(t, serverPlugin)
-			defer serverNADone()
-
-			// load up an in-memory key manager
-			km, kmDone := prepareKeyManager(t)
-			defer kmDone()
-
-			// initialize the catalog
-			catalog := fakeagentcatalog.New()
-			catalog.SetNodeAttestor(fakeagentcatalog.NodeAttestor("test", agentNA))
-			catalog.SetKeyManager(fakeagentcatalog.KeyManager(km))
-
-			// kick off the gRPC server serving the node API
-			serverAddr, serverDone := startNodeServer(t, tlsConfig, fakeNodeAPIConfig{
-				CACert:   caCert,
-				Attestor: serverNA,
-			})
-			defer serverDone()
-
-			// create the attestor
-			log, _ := test.NewNullLogger()
-			att := attestor.New(&attestor.Config{
-				Catalog: catalog,
-				Metrics: telemetry.Blackhole{},
-				Log:     log,
-				TrustDomain: url.URL{
-					Scheme: "spiffe",
-					Host:   "domain.test",
-				},
-				TrustBundle:   makeTrustBundle(testCase.bootstrapBundle),
-				ServerAddress: serverAddr,
-			})
-
-			// perform attestation
-			result, err := att.Attest(context.Background())
+			attribs, err := doAttestationFlow(t, agentPlugin, serverPlugin)
 			if testCase.err != "" {
-				spiretest.RequireErrorContains(t, err, testCase.err)
+				require.Error(err)
+				require.Contains(err.Error(), testCase.err)
 				return
 			}
 
 			require.NoError(err)
-			require.NotNil(result)
-			require.Len(result.SVID, 1)
-			require.Len(result.SVID[0].URIs, 1)
-			require.Equal(result.SVID[0].URIs[0].String(), svidExpected)
-			require.NotNil(result.Key)
-			require.NotNil(result.Bundle)
-
-			rootCAs := result.Bundle.RootCAs()
-			require.Len(rootCAs, 1)
-			require.Equal(rootCAs[0].Raw, caCert.Raw)
+			require.NotNil(attribs)
+			require.Equal(idExpected, attribs.SpiffeId)
+			require.Equal(selectorValuesExpected, attribs.SelectorValues)
 		})
 	}
 }
 
-func prepareTestDir(t *testing.T, caCerts []*x509.Certificate,
-	pemEncodeCA bool, emptyCA bool, hashes []string) (string, func()) {
-	dir, err := ioutil.TempDir("", "spire-tpm-plugin-")
-	require.NoError(t, err)
+func doAttestationFlow(t *testing.T, agentPlugin agentnodeattestorv1.NodeAttestorClient, serverPlugin servernodeattestorv1.NodeAttestorClient) (*servernodeattestorv1.AgentAttributes, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	ok := false
-	defer func() {
-		if !ok {
-			os.RemoveAll(dir)
+	agentStream, err := agentPlugin.AidAttestation(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed opening agent AidAttestation stream: %w", err)
+	}
+
+	serverStream, err := serverPlugin.Attest(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed opening server Attest stream: %w", err)
+	}
+
+	agentResp, err := agentStream.Recv()
+	if err != nil {
+		return nil, fmt.Errorf("failed to receive payload from agent plugin: %w", err)
+	}
+
+	require.NotEmpty(t, agentResp.GetPayload(), "agent plugin responded with an empty payload")
+
+	if err := serverStream.Send(&servernodeattestorv1.AttestRequest{
+		Request: &servernodeattestorv1.AttestRequest_Payload{
+			Payload: agentResp.GetPayload(),
+		},
+	}); err != nil {
+		return nil, fmt.Errorf("failed to send payload to server plugin: %w", err)
+	}
+
+	for {
+		serverResp, err := serverStream.Recv()
+		if err != nil {
+			return nil, fmt.Errorf("failed to receive response from server plugin: %w", err)
 		}
-	}()
+
+		if attribs := serverResp.GetAgentAttributes(); attribs != nil {
+			return attribs, nil
+		}
+
+		require.NotEmpty(t, serverResp.GetChallenge(), "server plugin responded with an empty challenge")
+
+		if err := agentStream.Send(&agentnodeattestorv1.Challenge{
+			Challenge: serverResp.GetChallenge(),
+		}); err != nil {
+			return nil, fmt.Errorf("failed to send challenge to agent plugin: %w", err)
+		}
+
+		agentResp, err := agentStream.Recv()
+		if err != nil {
+			return nil, fmt.Errorf("failed to receive challenge response from agent plugin: %w", err)
+		}
+
+		require.Nil(t, agentResp.GetPayload(), "agent plugin responded with a payload instead of a challenge")
+		require.NotEmpty(t, agentResp.GetChallengeResponse(), "agent plugin responded with an empty challenge response")
+
+		if err := serverStream.Send(&servernodeattestorv1.AttestRequest{
+			Request: &servernodeattestorv1.AttestRequest_ChallengeResponse{
+				ChallengeResponse: agentResp.GetChallengeResponse(),
+			},
+		}); err != nil {
+			return nil, fmt.Errorf("failed to send payload to server plugin: %w", err)
+		}
+	}
+}
+
+func prepareTestDir(t *testing.T, caCerts []*x509.Certificate,
+	pemEncodeCA bool, emptyCA bool, hashes []string) string {
+	dir := t.TempDir()
 
 	hcl := ""
 	if emptyCA || caCerts != nil {
@@ -292,7 +253,7 @@ func prepareTestDir(t *testing.T, caCerts []*x509.Certificate,
 				caCert := caCerts[i]
 				var b []byte
 				if pemEncodeCA {
-					b = pemutil.EncodeCertificate(caCert)
+					b = certificateToPEM(caCert)
 				} else {
 					b = caCert.Raw
 				}
@@ -310,82 +271,72 @@ func prepareTestDir(t *testing.T, caCerts []*x509.Certificate,
 		}
 	}
 
-	ok = true
-	return hcl, func() {
-		os.RemoveAll(dir)
-	}
+	return hcl
 }
 
-func prepareAgentNA(t *testing.T, plugin *TPMAttestorPlugin) (agentnodeattestor.NodeAttestor, func()) {
-	var agentNA agentnodeattestor.NodeAttestor
-	agentNADone := spiretest.LoadPlugin(t, catalog.MakePlugin("test",
-		agentnodeattestor.PluginServer(plugin),
-	), &agentNA)
-	return agentNA, agentNADone
+func loadAgentPlugin(t *testing.T, tpm *attest.TPM) agentnodeattestorv1.NodeAttestorClient {
+	p := New()
+	p.tpm = tpm
+
+	nodeAttestorClient := new(agentnodeattestorv1.NodeAttestorPluginClient)
+	configClient := new(configv1.ConfigServiceClient)
+
+	plugintest.ServeInBackground(t, plugintest.Config{
+		PluginServer:   agentnodeattestorv1.NodeAttestorPluginServer(p),
+		PluginClient:   nodeAttestorClient,
+		ServiceServers: []pluginsdk.ServiceServer{configv1.ConfigServiceServer(p)},
+		ServiceClients: []pluginsdk.ServiceClient{configClient},
+	})
+
+	_, err := configClient.Configure(context.Background(), &configv1.ConfigureRequest{
+		CoreConfiguration: &configv1.CoreConfiguration{
+			TrustDomain: "domain.test",
+		},
+	})
+	require.NoError(t, err)
+	return nodeAttestorClient
 }
 
-func prepareServerNA(t *testing.T, plugin *server.TPMAttestorPlugin) (servernodeattestor.NodeAttestor, func()) {
-	var serverNA servernodeattestor.NodeAttestor
-	serverNADone := spiretest.LoadPlugin(t, catalog.MakePlugin("test",
-		servernodeattestor.PluginServer(plugin),
-	), &serverNA)
-	return serverNA, serverNADone
-}
+func loadServerPlugin(t *testing.T, hclConfig string) servernodeattestorv1.NodeAttestorClient {
+	// load up the fake server-side node attestor
+	p := server.New()
 
-func prepareKeyManager(t *testing.T) (keymanager.KeyManager, func()) {
-	var km keymanager.KeyManager
-	kmDone := spiretest.LoadPlugin(t, memory.BuiltIn(), &km)
+	nodeAttestorClient := new(servernodeattestorv1.NodeAttestorPluginClient)
+	configClient := new(configv1.ConfigServiceClient)
+	plugintest.ServeInBackground(t, plugintest.Config{
+		PluginServer:   servernodeattestorv1.NodeAttestorPluginServer(p),
+		PluginClient:   nodeAttestorClient,
+		ServiceServers: []pluginsdk.ServiceServer{configv1.ConfigServiceServer(p)},
+		ServiceClients: []pluginsdk.ServiceClient{configClient},
+	})
 
-	ok := false
-	defer func() {
-		if !ok {
-			kmDone()
-		}
-	}()
+	_, err := configClient.Configure(context.Background(), &configv1.ConfigureRequest{
+		HclConfiguration: hclConfig,
+		CoreConfiguration: &configv1.CoreConfiguration{
+			TrustDomain: "domain.test",
+		},
+	})
+	require.NoError(t, err)
+	return nodeAttestorClient
 
-	ok = true
-	return km, kmDone
 }
 
 func writeFile(t *testing.T, path string, data []byte, mode os.FileMode) {
 	require.NoError(t, ioutil.WriteFile(path, data, mode))
 }
 
-func createCACertificate(t *testing.T) *x509.Certificate {
-	tmpl := &x509.Certificate{
-		BasicConstraintsValid: true,
-		IsCA:                  true,
-		URIs:                  []*url.URL{idutil.TrustDomainURI("domain.test")},
-	}
-	return createCertificate(t, tmpl, tmpl)
-}
-
-func createServerCertificate(t *testing.T, caCert *x509.Certificate) *x509.Certificate {
-	tmpl := &x509.Certificate{
-		URIs:     []*url.URL{idutil.ServerURI("domain.test")},
-		DNSNames: []string{"localhost"},
-	}
-	return createCertificate(t, tmpl, caCert)
-}
-
-func createCertificate(t *testing.T, tmpl, parent *x509.Certificate) *x509.Certificate {
-	now := time.Now()
-	tmpl.SerialNumber = big.NewInt(0)
-	tmpl.NotBefore = now
-	if tmpl.NotAfter.IsZero() {
-		tmpl.NotAfter = now.Add(time.Hour)
-	}
-	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, parent, testKey.Public(), testKey)
-	require.NoError(t, err)
-	cert, err := x509.ParseCertificate(certDER)
+func pemToCertificate(t *testing.T, pemBytes []byte) *x509.Certificate {
+	block, _ := pem.Decode(pemBytes)
+	require.NotNil(t, block)
+	require.Equal(t, block.Type, "CERTIFICATE")
+	cert, err := x509.ParseCertificate(block.Bytes)
 	require.NoError(t, err)
 	return cert
 }
 
-func makeTrustBundle(bootstrapCert *x509.Certificate) []*x509.Certificate {
-	var trustBundle []*x509.Certificate
-	if bootstrapCert != nil {
-		trustBundle = append(trustBundle, bootstrapCert)
-	}
-	return trustBundle
+func certificateToPEM(cert *x509.Certificate) []byte {
+	return pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: cert.Raw,
+	})
 }
