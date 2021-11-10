@@ -1,6 +1,6 @@
 FROM golang:latest AS go
 
-FROM ubuntu:20.04
+FROM ubuntu:impish-20211015
 
 RUN addgroup --gid 1000 docker \
     && adduser --uid 1000 --ingroup docker --home /home/docker --shell /bin/sh --disabled-password --gecos "" docker
